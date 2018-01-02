@@ -44,7 +44,7 @@ static void handler(int sig) {
 }
 
 static void usage() {
-    printf("Usage: wrk <options> <url>                            \n"
+    printf("Usage: dpdk-httpperf <options> <url>                  \n"
            "  Options:                                            \n"
            "    -c, --connections <N>  Connections to keep open   \n"
            "    -d, --duration    <T>  Duration of test           \n"
