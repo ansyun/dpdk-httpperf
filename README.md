@@ -33,9 +33,7 @@ EAL: Ask a virtual area of 0x15400000 bytes
 ```
 $ git clone https://github.com/ansyun/dpdk-httpperf.git
 $ make
-
-```
-$ ./dpdk-httpperf -t12 -c5000 -d30s http://10.0.0.10:80/index.html
+root@ubuntu:~/src/dpdk-httpperf# ./dpdk-httpperf -t12 -c5000 -d30s http://10.0.0.10:80/index.html
 start init anssock
 EAL: Detected lcore 0 as core 0 on socket 0
 EAL: Detected lcore 1 as core 1 on socket 0
@@ -68,5 +66,5 @@ Running 30s test @ http://10.0.0.10:80/index.html
   Socket errors: connect 0, read 4866, write 0, timeout 782
 Requests/sec:     50.22
 Transfer/sec:     41.69KB
-
 ```
+
