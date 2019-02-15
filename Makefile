@@ -34,7 +34,7 @@ CFLAGS  += -I$(RTE_ANS)/librte_ans/include \
            
 LIBS += $(RTE_ANS)/librte_anssock/librte_anssock.a \
 			  -L$(RTE_SDK)/$(RTE_TARGET)/lib \
-        -Wl,--whole-archive -Wl,-lrte_mbuf -Wl,-lrte_mempool_ring -Wl,-lrte_mempool -Wl,-lrte_ring -Wl,-lrte_eal -Wl,--no-whole-archive -Wl,-export-dynamic -lnuma\
+        -Wl,--whole-archive -Wl,-lrte_mbuf -Wl,-lrte_mempool_ring -Wl,-lrte_mempool -Wl,-lrte_ring -Wl,-lrte_eal -Wl,-lrte_kvargs -Wl,--no-whole-archive -Wl,-export-dynamic -lnuma\
 
 SRC  := wrk.c net.c ssl.c aprintf.c stats.c script.c units.c \
 		ae.c zmalloc.c http_parser.c ans_module.c
