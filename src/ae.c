@@ -137,6 +137,7 @@ int aeCreateFileEvent(aeEventLoop *eventLoop, int fd, int mask,
 {
     if (fd >= eventLoop->setsize) {
         errno = ERANGE;
+        printf(" fd(%d) >= set size(%d) \n", fd, eventLoop->setsize);
         return AE_ERR;
     }
     aeFileEvent *fe = &eventLoop->events[fd];

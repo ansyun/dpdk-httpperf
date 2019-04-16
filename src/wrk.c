@@ -1,10 +1,13 @@
 // Copyright (C) 2012 - Will Glozer.  All rights reserved.
-
+#include <arpa/inet.h>
+#include <sys/epoll.h>
 #include "wrk.h"
 #include "script.h"
 #include "main.h"
 #include "anssock_intf.h"
 #include "ans_errno.h"
+
+void ans_mod_init(char *file_prefix);
 
 static struct config {
     uint64_t connections;
@@ -17,6 +20,11 @@ static struct config {
     bool     latency;
     char    *host;
     char    *script;
+    char    *iprange;
+    uint32_t ip_start;
+    uint32_t ip_end;
+    uint64_t send_delay;
+    char *file_prefix;
     SSL_CTX *ctx;
 } cfg;
 
@@ -54,6 +62,7 @@ static void usage() {
            "    -H, --header      <H>  Add header to request      \n"
            "        --latency          Print latency statistics   \n"
            "        --timeout     <T>  Socket/request timeout     \n"
+           "        --iprange      bind IP range(10.0.0.20-10.0.0.30)     \n"
            "    -v, --version          Print version details      \n"
            "                                                      \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)\n"
@@ -68,7 +77,7 @@ int main(int argc, char **argv) {
         usage();
         exit(1);
     }
-
+    
     char *schema  = copy_url_part(url, &parts, UF_SCHEMA);
     char *host    = copy_url_part(url, &parts, UF_HOST);
     char *port    = copy_url_part(url, &parts, UF_PORT);
@@ -89,7 +98,7 @@ int main(int argc, char **argv) {
 
     printf("start init anssock \n");
     /* init ans socket */
-    ans_mod_init();	
+    ans_mod_init(cfg.file_prefix);	
 	
     signal(SIGPIPE, SIG_IGN);
     signal(SIGINT,  SIG_IGN);
@@ -109,7 +118,8 @@ int main(int argc, char **argv) {
 
     for (uint64_t i = 0; i < cfg.threads; i++) {
         thread *t      = &threads[i];
-        t->loop        = aeCreateEventLoop(10 + cfg.connections * 3);
+        /* ans fd may very large, shall be same as ans fd config, set 200000 as default value */
+        t->loop        = aeCreateEventLoop(200000 + 10 + cfg.connections * 3); 
         t->connections = cfg.connections / cfg.threads;
 
         t->L = script_create(cfg.script, url, headers);
@@ -210,11 +220,14 @@ void *thread_main(void *arg) {
 
     char *request = NULL;
     size_t length = 0;
-
+    uint32_t ip_range;
+    
     if (!cfg.dynamic) {
         script_request(thread->L, &request, &length);
     }
 
+    ip_range = cfg.ip_end - cfg.ip_start;
+    
     thread->cs = zcalloc(thread->connections * sizeof(connection));
     connection *c = thread->cs;
 
@@ -224,6 +237,16 @@ void *thread_main(void *arg) {
         c->request = request;
         c->length  = length;
         c->delayed = cfg.delay;
+
+        if(cfg.ip_start > 0)
+        {
+            c->local_ip = cfg.ip_start + i % ip_range;
+        }
+        else
+        {
+            c->local_ip = 0;
+        }
+        
         connect_socket(thread, c);
     }
 
@@ -243,8 +266,23 @@ static int connect_socket(thread *thread, connection *c) {
     struct addrinfo *addr = thread->addr;
     struct aeEventLoop *loop = thread->loop;
     int fd, flags;
-
+    struct sockaddr_in local_addr;      
+    
+    memset(&local_addr,0,sizeof(local_addr)); 
+    local_addr.sin_family = AF_INET; 
+    local_addr.sin_addr.s_addr = htonl(c->local_ip);   
+    local_addr.sin_port = 0;    /* stack assign local port */
+    
     fd = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
+
+    if(c->local_ip)
+    {
+        if (bind(fd, (struct sockaddr *)&local_addr, sizeof(struct sockaddr_in)) < 0)     
+        {     
+            printf("bind error, local ip 0x%x \n", c->local_ip);     
+            goto error;     
+        }
+    }
 
     flags = fcntl(fd, F_GETFL, 0);
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
@@ -390,11 +428,17 @@ static void socket_connected(aeEventLoop *loop, int fd, void *data, int mask) {
 static void socket_writeable(aeEventLoop *loop, int fd, void *data, int mask) {
     connection *c = data;
     thread *thread = c->thread;
-
+/*
     if (c->delayed) {
         uint64_t delay = script_delay(thread->L);
         aeDeleteFileEvent(loop, fd, AE_WRITABLE);
         aeCreateTimeEvent(loop, delay, delay_request, c, NULL);
+        return;
+    }
+*/
+    if (cfg.send_delay) {
+        aeDeleteFileEvent(loop, fd, AE_WRITABLE);
+        aeCreateTimeEvent(loop, cfg.send_delay, delay_request, c, NULL);
         return;
     }
 
@@ -444,7 +488,8 @@ static void socket_readable(aeEventLoop *loop, int fd, void *data, int mask) {
         if (n == 0 && !http_body_is_final(&c->parser)) goto error;
 
         c->thread->bytes += n;
-    } while (n == RECVBUF && sock.readable(c) > 0);
+    } while (1);
+    /* } while (n == RECVBUF && sock.readable(c) > 0); */ 
 
     return;
 
@@ -480,6 +525,9 @@ static struct option longopts[] = {
     { "header",      required_argument, NULL, 'H' },
     { "latency",     no_argument,       NULL, 'L' },
     { "timeout",     required_argument, NULL, 'T' },
+    { "iprange",     required_argument, NULL, 'i' },
+    { "delay",     required_argument, NULL, 'D' },
+    { "file-prefix",     required_argument, NULL, 'f' },
     { "help",        no_argument,       NULL, 'h' },
     { "version",     no_argument,       NULL, 'v' },
     { NULL,          0,                 NULL,  0  }
@@ -495,7 +543,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
     cfg->duration    = 10;
     cfg->timeout     = SOCKET_TIMEOUT_MS;
 
-    while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:Lrv?", longopts, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "t:c:d:s:H:T:i:D:f:Lrv?", longopts, NULL)) != -1) {
         switch (c) {
             case 't':
                 if (scan_metric(optarg, &cfg->threads)) return -1;
@@ -509,6 +557,19 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
             case 's':
                 cfg->script = optarg;
                 break;
+                
+            case 'i':
+                cfg->iprange = optarg;
+                break;
+
+            case 'f':
+                cfg->file_prefix = optarg;
+                break;
+
+            case 'D':
+                if (scan_time(optarg, &cfg->send_delay)) return -1;
+                break;
+                
             case 'H':
                 *header++ = optarg;
                 break;
@@ -520,7 +581,7 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
                 cfg->timeout *= 1000;
                 break;
             case 'v':
-                printf("wrk %s [%s] ", VERSION, aeGetApiName());
+                printf("httpperf %s [%s] ", VERSION, aeGetApiName());
                 printf("Copyright (C) 2012 Will Glozer\n");
                 break;
             case 'h':
@@ -542,6 +603,45 @@ static int parse_args(struct config *cfg, char **url, struct http_parser_url *pa
         fprintf(stderr, "number of connections must be >= threads\n");
         return -1;
     }
+
+    if(cfg->iprange != NULL)
+    {
+        char *ip_start;
+        char *ip_end;
+        ip_start = strsep(&cfg->iprange, "-");
+        ip_end= strsep(&cfg->iprange, "-");
+
+        if(ip_start)
+        {
+            cfg->ip_start = (inet_addr(ip_start) == INADDR_NONE) ? 0 : ntohl(inet_addr(ip_start));
+        }
+        
+        if(ip_end)
+        {
+            cfg->ip_end = (inet_addr(ip_end) == INADDR_NONE) ? 0 : ntohl(inet_addr(ip_end));
+        }
+
+        if(cfg->ip_start > cfg->ip_end)
+        {
+            uint32_t ip = cfg->ip_start;
+            cfg->ip_start = cfg->ip_end;
+            cfg->ip_end = ip;
+        }
+        
+        printf("ip start 0x%x, ip end 0x%x \n", cfg->ip_start, cfg->ip_end);
+    }
+    else
+    {
+        cfg->ip_start = 0;
+        cfg->ip_end = 0;
+    }
+
+    if(cfg->file_prefix)
+    {
+        printf("file prefix: %s \n", cfg->file_prefix);
+    }
+    
+    printf("send delay %ld ms \n", cfg->send_delay);
 
     *url    = argv[optind];
     *header = NULL;

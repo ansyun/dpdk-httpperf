@@ -51,6 +51,7 @@ typedef struct connection {
         FIELD, VALUE
     } state;
     int fd;
+    uint32_t local_ip;
     SSL *ssl;
     bool delayed;
     uint64_t start;
