@@ -64,6 +64,7 @@ static void usage() {
            "        --timeout     <T>  Socket/request timeout     \n"
            "        --iprange      bind IP range(10.0.0.20-10.0.0.30)     \n"
            "    -v, --version          Print version details      \n"
+           "    -D, --delay          delay for send request      \n"
            "                                                      \n"
            "  Numeric arguments may include a SI unit (1k, 1M, 1G)\n"
            "  Time arguments may include a time unit (2s, 2m, 2h)\n");
@@ -116,12 +117,38 @@ int main(int argc, char **argv) {
 
     cfg.host = host;
 
+    printf("thread number %ld \n", cfg.threads);
+
+    int ip_nb = cfg.ip_end - cfg.ip_start;
+    int ip_range = 0;
+    if(ip_nb)
+    {
+        printf("local IP number %d \n", ip_nb);
+        if(ip_nb < cfg.threads)
+        {
+            printf("IP number shall large than threads number \n");
+            exit(1);
+        }
+        ip_range = ip_nb / cfg.threads;
+    }
+        
+
     for (uint64_t i = 0; i < cfg.threads; i++) {
         thread *t      = &threads[i];
         /* ans fd may very large, shall be same as ans fd config, set 200000 as default value */
         t->loop        = aeCreateEventLoop(200000 + 10 + cfg.connections * 3); 
         t->connections = cfg.connections / cfg.threads;
-
+        if(ip_range)
+        {
+            t->ip_start = cfg.ip_start + i * ip_range;
+            t->ip_end = t->ip_start + ip_range - 1;
+        }
+        else
+        {
+            t->ip_start = 0;
+            t->ip_end = 0;
+        }
+        
         t->L = script_create(cfg.script, url, headers);
         script_init(L, t, argc - optind, &argv[optind]);
 
@@ -226,8 +253,9 @@ void *thread_main(void *arg) {
         script_request(thread->L, &request, &length);
     }
 
-    ip_range = cfg.ip_end - cfg.ip_start;
-    
+    ip_range = thread->ip_end - thread->ip_start;
+    printf("thread %p, ip start 0x%x, ip end 0x%x \n", thread, thread->ip_start, thread->ip_end);
+ 
     thread->cs = zcalloc(thread->connections * sizeof(connection));
     connection *c = thread->cs;
 
@@ -238,9 +266,9 @@ void *thread_main(void *arg) {
         c->length  = length;
         c->delayed = cfg.delay;
 
-        if(cfg.ip_start > 0)
+        if(thread->ip_start > 0)
         {
-            c->local_ip = cfg.ip_start + i % ip_range;
+            c->local_ip = thread->ip_start + i % (ip_range + 1);
         }
         else
         {
@@ -267,7 +295,8 @@ static int connect_socket(thread *thread, connection *c) {
     struct aeEventLoop *loop = thread->loop;
     int fd, flags;
     struct sockaddr_in local_addr;      
-    
+    int opt_val = 1;
+  
     memset(&local_addr,0,sizeof(local_addr)); 
     local_addr.sin_family = AF_INET; 
     local_addr.sin_addr.s_addr = htonl(c->local_ip);   
@@ -275,6 +304,11 @@ static int connect_socket(thread *thread, connection *c) {
     
     fd = socket(addr->ai_family, addr->ai_socktype, addr->ai_protocol);
 
+    if(setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt_val, sizeof(int)) < 0)
+    {
+        printf("set socket SO_REUSEPORT option failed \n");
+    }
+       
     if(c->local_ip)
     {
         if (bind(fd, (struct sockaddr *)&local_addr, sizeof(struct sockaddr_in)) < 0)     
